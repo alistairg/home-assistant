@@ -1,17 +1,12 @@
-"""
-Support for testing internet speed via Fast.com.
-
-For more details about this platform, please refer to the documentation at
-https://home-assistant.io/components/fastdotcom/
-"""
-
+"""Support for testing internet speed via Fast.com."""
 import logging
 from datetime import timedelta
 
 import voluptuous as vol
 
 import homeassistant.helpers.config_validation as cv
-from homeassistant.const import CONF_UPDATE_INTERVAL
+from homeassistant.const import CONF_UPDATE_INTERVAL, CONF_SCAN_INTERVAL, \
+    CONF_UPDATE_INTERVAL_INVALIDATION_VERSION
 from homeassistant.helpers.discovery import async_load_platform
 from homeassistant.helpers.dispatcher import dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
@@ -28,22 +23,33 @@ CONF_MANUAL = 'manual'
 DEFAULT_INTERVAL = timedelta(hours=1)
 
 CONFIG_SCHEMA = vol.Schema({
-    DOMAIN: vol.Schema({
-        vol.Optional(CONF_UPDATE_INTERVAL, default=DEFAULT_INTERVAL):
-            vol.All(
-                cv.time_period, cv.positive_timedelta
-            ),
-        vol.Optional(CONF_MANUAL, default=False): cv.boolean,
-    })
+    DOMAIN: vol.All(
+        vol.Schema({
+            vol.Optional(CONF_UPDATE_INTERVAL):
+                vol.All(cv.time_period, cv.positive_timedelta),
+            vol.Optional(CONF_SCAN_INTERVAL, default=DEFAULT_INTERVAL):
+                vol.All(cv.time_period, cv.positive_timedelta),
+            vol.Optional(CONF_MANUAL, default=False): cv.boolean,
+        }),
+        cv.deprecated(
+            CONF_UPDATE_INTERVAL,
+            replacement_key=CONF_SCAN_INTERVAL,
+            invalidation_version=CONF_UPDATE_INTERVAL_INVALIDATION_VERSION,
+            default=DEFAULT_INTERVAL
+        )
+    )
 }, extra=vol.ALLOW_EXTRA)
 
 
 async def async_setup(hass, config):
     """Set up the Fast.com component."""
     conf = config[DOMAIN]
-    data = hass.data[DOMAIN] = SpeedtestData(
-        hass, conf[CONF_UPDATE_INTERVAL], conf[CONF_MANUAL]
-    )
+    data = hass.data[DOMAIN] = SpeedtestData(hass)
+
+    if not conf[CONF_MANUAL]:
+        async_track_time_interval(
+            hass, data.update, conf[CONF_SCAN_INTERVAL]
+        )
 
     def update(call=None):
         """Service call to manually update the data."""
@@ -61,14 +67,12 @@ async def async_setup(hass, config):
 class SpeedtestData:
     """Get the latest data from fast.com."""
 
-    def __init__(self, hass, interval, manual):
+    def __init__(self, hass):
         """Initialize the data object."""
         self.data = None
         self._hass = hass
-        if not manual:
-            async_track_time_interval(self._hass, self.update, interval)
 
-    def update(self):
+    def update(self, now=None):
         """Get the latest data from fast.com."""
         from fastdotcom import fast_com
         _LOGGER.debug("Executing fast.com speedtest")

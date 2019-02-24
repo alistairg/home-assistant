@@ -1,14 +1,8 @@
-"""
-Support for HomematicIP Cloud sensors.
-
-For more details about this platform, please refer to the documentation at
-https://home-assistant.io/components/sensor.homematicip_cloud/
-"""
+"""Support for HomematicIP Cloud sensors."""
 import logging
 
 from homeassistant.components.homematicip_cloud import (
-    HMIPC_HAPID, HomematicipGenericDevice)
-from homeassistant.components.homematicip_cloud import DOMAIN as HMIPC_DOMAIN
+    DOMAIN as HMIPC_DOMAIN, HMIPC_HAPID, HomematicipGenericDevice)
 from homeassistant.const import (
     DEVICE_CLASS_HUMIDITY, DEVICE_CLASS_ILLUMINANCE, DEVICE_CLASS_TEMPERATURE,
     TEMP_CELSIUS)
@@ -36,7 +30,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         AsyncHeatingThermostat, AsyncTemperatureHumiditySensorWithoutDisplay,
         AsyncTemperatureHumiditySensorDisplay, AsyncMotionDetectorIndoor,
         AsyncTemperatureHumiditySensorOutdoor,
-        AsyncMotionDetectorPushButton)
+        AsyncMotionDetectorPushButton, AsyncLightSensor,
+        AsyncPlugableSwitchMeasuring, AsyncBrandSwitchMeasuring,
+        AsyncFullFlushSwitchMeasuring)
 
     home = hass.data[HMIPC_DOMAIN][config_entry.data[HMIPC_HAPID]].home
     devices = [HomematicipAccesspointStatus(home)]
@@ -51,6 +47,12 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         if isinstance(device, (AsyncMotionDetectorIndoor,
                                AsyncMotionDetectorPushButton)):
             devices.append(HomematicipIlluminanceSensor(home, device))
+        if isinstance(device, AsyncLightSensor):
+            devices.append(HomematicipLightSensor(home, device))
+        if isinstance(device, (AsyncPlugableSwitchMeasuring,
+                               AsyncBrandSwitchMeasuring,
+                               AsyncFullFlushSwitchMeasuring)):
+            devices.append(HomematicipPowerSensor(home, device))
 
     if devices:
         async_add_entities(devices)
@@ -184,3 +186,30 @@ class HomematicipIlluminanceSensor(HomematicipGenericDevice):
     def unit_of_measurement(self):
         """Return the unit this state is expressed in."""
         return 'lx'
+
+
+class HomematicipLightSensor(HomematicipIlluminanceSensor):
+    """Represenation of a HomematicIP Illuminance device."""
+
+    @property
+    def state(self):
+        """Return the state."""
+        return self._device.averageIllumination
+
+
+class HomematicipPowerSensor(HomematicipGenericDevice):
+    """Represenation of a HomematicIP power measuring device."""
+
+    def __init__(self, home, device):
+        """Initialize the  device."""
+        super().__init__(home, device, 'Power')
+
+    @property
+    def state(self):
+        """Represenation of the HomematicIP power comsumption value."""
+        return self._device.currentPowerConsumption
+
+    @property
+    def unit_of_measurement(self):
+        """Return the unit this state is expressed in."""
+        return 'W'

@@ -4,22 +4,43 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from pysmartthings import (
-    CLASSIFICATION_AUTOMATION, AppEntity, AppSettings, DeviceEntity,
-    InstalledApp, Location)
+    CLASSIFICATION_AUTOMATION, AppEntity, AppOAuthClient, AppSettings,
+    DeviceEntity, InstalledApp, Location, Subscription)
 from pysmartthings.api import Api
 import pytest
 
 from homeassistant.components import webhook
+from homeassistant.components.smartthings import DeviceBroker
 from homeassistant.components.smartthings.const import (
     APP_NAME_PREFIX, CONF_APP_ID, CONF_INSTALLED_APP_ID, CONF_INSTANCE_ID,
-    CONF_LOCATION_ID, DOMAIN, SETTINGS_INSTANCE_ID, STORAGE_KEY,
-    STORAGE_VERSION)
+    CONF_LOCATION_ID, CONF_OAUTH_CLIENT_ID, CONF_OAUTH_CLIENT_SECRET,
+    CONF_REFRESH_TOKEN, DATA_BROKERS, DOMAIN, SETTINGS_INSTANCE_ID,
+    STORAGE_KEY, STORAGE_VERSION)
 from homeassistant.config_entries import (
     CONN_CLASS_CLOUD_PUSH, SOURCE_USER, ConfigEntry)
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_WEBHOOK_ID
 from homeassistant.setup import async_setup_component
 
 from tests.common import mock_coro
+
+
+async def setup_platform(hass, platform: str, *devices):
+    """Set up the SmartThings platform and prerequisites."""
+    hass.config.components.add(DOMAIN)
+    config_entry = ConfigEntry(2, DOMAIN, "Test",
+                               {CONF_INSTALLED_APP_ID:  str(uuid4())},
+                               SOURCE_USER, CONN_CLASS_CLOUD_PUSH)
+    broker = DeviceBroker(hass, config_entry, Mock(), Mock(), devices)
+
+    hass.data[DOMAIN] = {
+        DATA_BROKERS: {
+            config_entry.entry_id: broker
+        }
+    }
+    await hass.config_entries.async_forward_entry_setup(
+        config_entry, platform)
+    await hass.async_block_till_done()
+    return config_entry
 
 
 @pytest.fixture(autouse=True)
@@ -78,6 +99,15 @@ def app_fixture(hass, config_file):
     app.settings = Mock()
     app.settings.return_value = mock_coro(return_value=settings)
     return app
+
+
+@pytest.fixture(name="app_oauth_client")
+def app_oauth_client_fixture():
+    """Fixture for a single app's oauth."""
+    return AppOAuthClient({
+        'oauthClientId': str(uuid4()),
+        'oauthClientSecret': str(uuid4())
+    })
 
 
 @pytest.fixture(name='app_settings')
@@ -207,17 +237,31 @@ def config_entry_fixture(hass, installed_app, location):
         CONF_ACCESS_TOKEN: str(uuid4()),
         CONF_INSTALLED_APP_ID: installed_app.installed_app_id,
         CONF_APP_ID: installed_app.app_id,
-        CONF_LOCATION_ID: location.location_id
+        CONF_LOCATION_ID: location.location_id,
+        CONF_REFRESH_TOKEN: str(uuid4()),
+        CONF_OAUTH_CLIENT_ID: str(uuid4()),
+        CONF_OAUTH_CLIENT_SECRET: str(uuid4())
     }
-    return ConfigEntry("1", DOMAIN, location.name, data, SOURCE_USER,
+    return ConfigEntry(2, DOMAIN, location.name, data, SOURCE_USER,
                        CONN_CLASS_CLOUD_PUSH)
+
+
+@pytest.fixture(name="subscription_factory")
+def subscription_factory_fixture():
+    """Fixture for creating mock subscriptions."""
+    def _factory(capability):
+        sub = Subscription()
+        sub.capability = capability
+        return sub
+    return _factory
 
 
 @pytest.fixture(name="device_factory")
 def device_factory_fixture():
     """Fixture for creating mock devices."""
     api = Mock(spec=Api)
-    api.post_device_command.return_value = mock_coro(return_value={})
+    api.post_device_command.side_effect = \
+        lambda *args, **kwargs: mock_coro(return_value={})
 
     def _factory(label, capabilities, status: dict = None):
         device_data = {
@@ -254,14 +298,16 @@ def device_factory_fixture():
 @pytest.fixture(name="event_factory")
 def event_factory_fixture():
     """Fixture for creating mock devices."""
-    def _factory(device_id, event_type="DEVICE_EVENT"):
+    def _factory(device_id, event_type="DEVICE_EVENT", capability='',
+                 attribute='Updated', value='Value'):
         event = Mock()
         event.event_type = event_type
         event.device_id = device_id
         event.component_id = 'main'
-        event.capability = ''
-        event.attribute = 'Updated'
-        event.value = 'Value'
+        event.capability = capability
+        event.attribute = attribute
+        event.value = value
+        event.location_id = str(uuid4())
         return event
     return _factory
 
@@ -269,11 +315,15 @@ def event_factory_fixture():
 @pytest.fixture(name="event_request_factory")
 def event_request_factory_fixture(event_factory):
     """Fixture for creating mock smartapp event requests."""
-    def _factory(device_ids):
+    def _factory(device_ids=None, events=None):
         request = Mock()
         request.installed_app_id = uuid4()
-        request.events = [event_factory(id) for id in device_ids]
-        request.events.append(event_factory(uuid4()))
-        request.events.append(event_factory(device_ids[0], event_type="OTHER"))
+        if events is None:
+            events = []
+        if device_ids:
+            events.extend([event_factory(id) for id in device_ids])
+            events.append(event_factory(uuid4()))
+            events.append(event_factory(device_ids[0], event_type="OTHER"))
+        request.events = events
         return request
     return _factory

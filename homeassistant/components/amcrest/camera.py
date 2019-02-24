@@ -1,9 +1,4 @@
-"""
-This component provides basic support for Amcrest IP cameras.
-
-For more details about this platform, please refer to the documentation at
-https://home-assistant.io/components/camera.amcrest/
-"""
+"""Support for Amcrest IP cameras."""
 import logging
 
 from homeassistant.components.amcrest import (
@@ -82,7 +77,7 @@ class AmcrestCam(Camera):
         try:
             return await async_aiohttp_proxy_stream(
                 self.hass, request, stream,
-                'multipart/x-mixed-replace;boundary=ffserver')
+                self._ffmpeg.ffmpeg_stream_content_type)
         finally:
             await stream.close()
 
