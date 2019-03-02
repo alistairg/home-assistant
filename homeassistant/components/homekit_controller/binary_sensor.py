@@ -20,7 +20,7 @@ def setup_platform(hass, config, add_entities, discovery_info=None):
 class HomeKitMotionSensor(HomeKitEntity, BinarySensorDevice):
     """Representation of a Homekit sensor."""
 
-    def __init__(self, *args):
+    def __init__(self, *args, **kwargs):
         """Initialise the entity."""
         super().__init__(*args)
         self._on = False
@@ -32,10 +32,14 @@ class HomeKitMotionSensor(HomeKitEntity, BinarySensorDevice):
 
         return [
             CharacteristicsTypes.MOTION_DETECTED,
+            CharacteristicsTypes.CONTACT_STATE
         ]
 
     def _update_motion_detected(self, value):
         self._on = value
+
+    def _update_contact_state(self, value):
+        self._on = (value == 1)
 
     @property
     def device_class(self):

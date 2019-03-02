@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import threading
 
 from homeassistant.components.discovery import SERVICE_HOMEKIT
 from homeassistant.helpers import discovery
@@ -25,6 +26,7 @@ HOMEKIT_ACCESSORY_DISPATCH = {
     'window-covering': 'cover',
     'lock-mechanism': 'lock',
     'motion': 'binary_sensor',
+    'contact': 'binary_sensor',
 }
 
 HOMEKIT_IGNORE = [
@@ -86,8 +88,10 @@ class HKDevice():
         self.config = config
         self.configurator = hass.components.configurator
         self._connection_warning_logged = False
-
+        self._mapped_entities = {}
         self.pairing = self.controller.pairings.get(hkid)
+        self._expected_registrations = 0
+        self._chars_to_poll = []
 
         if self.pairing is not None:
             self.accessory_setup()
@@ -103,6 +107,7 @@ class HKDevice():
         self.pairing.pairing_data['AccessoryIP'] = self.host
         self.pairing.pairing_data['AccessoryPort'] = self.port
 
+        # Iterate over accessories, services and characteristics creating entities
         try:
             data = self.pairing.list_accessories_and_characteristics()
         except AccessoryDisconnectedError:
@@ -115,8 +120,10 @@ class HKDevice():
                 continue
             self.hass.data[KNOWN_ACCESSORIES][serial] = self
             aid = accessory['aid']
+            self._mapped_entities[aid] = {}
             for service in accessory['services']:
                 devtype = ServicesTypes.get_short(service['type'])
+                pushed_events = []
                 _LOGGER.debug("Found %s", devtype)
                 service_info = {'serial': serial,
                                 'aid': aid,
@@ -125,8 +132,50 @@ class HKDevice():
                                 'device-type': devtype}
                 component = HOMEKIT_ACCESSORY_DISPATCH.get(devtype, None)
                 if component is not None:
+                    for characteristic in service['characteristics']:
+                        if "ev" in characteristic['perms']:
+                            iid = characteristic['iid']
+                            pushed_events.append((aid, iid))
+                    service_info['pushed_events'] = pushed_events
+                    self._expected_registrations = self._expected_registrations + 1
                     discovery.load_platform(self.hass, component, DOMAIN,
                                             service_info, self.config)
+                else:
+                    _LOGGER.debug("Ignoring unsupported homekit service of type '%s' (%s)", devtype, self.model)
+        _LOGGER.debug("After initialization - expecting callback from %i entities", self._expected_registrations)
+
+
+    def subscribe_to_events(self, chars_to_poll):
+        """ Start a thread to get events from Homekit"""
+
+        def event_callback(changes):
+            _LOGGER.debug("Callback! - %s", changes)
+            for change in changes:
+                aid = change[0]
+                iid = change[1]
+                new_value = change[2]
+                changed_entity = self._mapped_entities[aid].get(iid, None)
+                if changed_entity is not None:
+                    changed_entity.handle_homekit_event(iid, new_value)
+
+        _LOGGER.debug("Subscribing to events - %s", chars_to_poll)
+        thread = threading.Thread(target=self.pairing.get_events, args=(chars_to_poll, event_callback), kwargs={"max_events":-1, "max_seconds":-1})
+        thread.daemon = True
+        thread.start()
+
+    def register_instance(self, registration_pairs, entity):
+
+        """ Handle registration of an entity for pushed events """
+        for (aid, iid) in registration_pairs:
+            _LOGGER.debug("Registered '%s' for aid %i, iid %i", entity.name, aid, iid)
+            self._mapped_entities[aid][iid] = entity
+            self._chars_to_poll.append((aid, iid))
+        
+        assert self._expected_registrations > 0, "More registrations for notifications than entities created!"
+        self._expected_registrations = self._expected_registrations - 1
+        if self._expected_registrations == 0 and self._chars_to_poll:
+            self.subscribe_to_events(self._chars_to_poll)
+        
 
     def device_config_callback(self, callback_data):
         """Handle initial pairing."""
@@ -191,13 +240,14 @@ class HomeKitEntity(Entity):
         self._accessory = accessory
         self._aid = devinfo['aid']
         self._iid = devinfo['iid']
+        self._pushed_events = devinfo['pushed_events']
         self._address = "homekit-{}-{}".format(devinfo['serial'], self._iid)
         self._features = 0
         self._chars = {}
         self.setup()
 
     def setup(self):
-        """Configure an entity baed on its HomeKit characterstics metadata."""
+        """Configure an entity based on its HomeKit characterstics metadata."""
         # pylint: disable=import-error
         from homekit.model.characteristics import CharacteristicsTypes
 
@@ -209,6 +259,7 @@ class HomeKitEntity(Entity):
         ]
 
         self._chars_to_poll = []
+        self._chars_to_push = []
         self._chars = {}
         self._char_names = {}
 
@@ -229,13 +280,33 @@ class HomeKitEntity(Entity):
                         continue
                     self._setup_characteristic(char)
 
+        # Register for any notifications
+        self._accessory.register_instance(self._chars_to_push, self)
+
+
+    def handle_homekit_event(self, iid, new_value):
+        """Handle event pushed from Homekit"""
+
+        _LOGGER.debug("Event Callback! - iid %s changed to %s", iid, new_value)
+        char_name = escape_characteristic_name(self._char_names[iid])
+        update_fn = getattr(self, '_update_{}'.format(char_name), None)
+        _LOGGER.debug("Looking for update function '%s'", update_fn)
+        if update_fn:
+            # pylint: disable=not-callable
+            update_fn(new_value)
+            self.schedule_update_ha_state()
+
     def _setup_characteristic(self, char):
         """Configure an entity based on a HomeKit characteristics metadata."""
         # pylint: disable=import-error
         from homekit.model.characteristics import CharacteristicsTypes
 
         # Build up a list of (aid, iid) tuples to poll on update()
-        self._chars_to_poll.append((self._aid, char['iid']))
+        poll_pair = (self._aid, char['iid'])
+        if poll_pair in self._pushed_events:
+            self._chars_to_push.append((self._aid, char['iid']))
+        else:
+            self._chars_to_poll.append((self._aid, char['iid']))
 
         # Build a map of ctype -> iid
         short_name = CharacteristicsTypes.get_short(char['type'])
@@ -247,19 +318,34 @@ class HomeKitEntity(Entity):
         setup_fn_name = escape_characteristic_name(short_name)
         setup_fn = getattr(self, '_setup_{}'.format(setup_fn_name), None)
         if not setup_fn:
+            _LOGGER.debug("Disregarding characteristic with missing setup function '%s'", setup_fn_name)
             return
         # pylint: disable=not-callable
         setup_fn(char)
 
+    @property
+    def should_poll(self):
+        """Homekit is a push platform"""
+        return len(self._chars_to_poll) > 0
+
     def update(self):
         """Obtain a HomeKit device's state."""
         # pylint: disable=import-error
+
+        if not self._chars_to_poll:
+            return
+        else:
+            _LOGGER.warn("WARNING: Still have polled characteristics! Homekit will likely bail...")
+            return
+
         from homekit.exceptions import AccessoryDisconnectedError
 
         pairing = self._accessory.pairing
 
         try:
+            _LOGGER.debug("Polling for characteristics %s", self._chars_to_poll)
             new_values_dict = pairing.get_characteristics(self._chars_to_poll)
+            new_values_dict = {}
         except AccessoryDisconnectedError:
             return
 
@@ -358,7 +444,7 @@ def setup(hass, config):
                 device.accessory_setup()
             return
 
-        _LOGGER.debug('Discovered unique device %s', hkid)
+        _LOGGER.debug('Discovered unique device %s (%s)', hkid, model)
         device = HKDevice(hass, host, port, model, hkid, config_num, config)
         hass.data[KNOWN_DEVICES][hkid] = device
 
