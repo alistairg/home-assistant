@@ -243,6 +243,7 @@ class HomeKitEntity(Entity):
         self._pushed_events = devinfo['pushed_events']
         self._address = "homekit-{}-{}".format(devinfo['serial'], self._iid)
         self._features = 0
+        self._homekit_type = devinfo['device-type']
         self._chars = {}
         self.setup()
 

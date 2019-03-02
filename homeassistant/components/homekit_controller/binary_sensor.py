@@ -9,6 +9,11 @@ DEPENDENCIES = ['homekit_controller']
 
 _LOGGER = logging.getLogger(__name__)
 
+HOMEKIT_SENSOR_TYPE_MAP = {
+        "contact": "window",
+        "_default_": "motion"
+    }
+
 
 def setup_platform(hass, config, add_entities, discovery_info=None):
     """Set up Homekit motion sensor support."""
@@ -43,8 +48,8 @@ class HomeKitMotionSensor(HomeKitEntity, BinarySensorDevice):
 
     @property
     def device_class(self):
-        """Define this binary_sensor as a motion sensor."""
-        return 'motion'
+        """Define this binary_sensor as the right Homekit sensor"""
+        return HOMEKIT_SENSOR_TYPE_MAP.get(self._homekit_type, HOMEKIT_SENSOR_TYPE_MAP['_default_'])
 
     @property
     def is_on(self):
