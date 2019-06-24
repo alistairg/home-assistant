@@ -1,19 +1,22 @@
 """Provide a way to connect entities belonging to one device."""
 import logging
 import uuid
-
+from asyncio import Event
 from collections import OrderedDict
+from typing import List, Optional, cast
 
 import attr
 
 from homeassistant.core import callback
 from homeassistant.loader import bind_hass
 
+from .typing import HomeAssistantType
+
 _LOGGER = logging.getLogger(__name__)
 _UNDEF = object()
 
 DATA_REGISTRY = 'device_registry'
-
+EVENT_DEVICE_REGISTRY_UPDATED = 'device_registry_updated'
 STORAGE_KEY = 'core.device_registry'
 STORAGE_VERSION = 1
 SAVE_DELAY = 10
@@ -35,9 +38,12 @@ class DeviceEntry:
     model = attr.ib(type=str, default=None)
     name = attr.ib(type=str, default=None)
     sw_version = attr.ib(type=str, default=None)
-    hub_device_id = attr.ib(type=str, default=None)
+    via_device_id = attr.ib(type=str, default=None)
     area_id = attr.ib(type=str, default=None)
+    name_by_user = attr.ib(type=str, default=None)
     id = attr.ib(type=str, default=attr.Factory(lambda: uuid.uuid4().hex))
+    # This value is not stored, just used to keep track of events to fire.
+    is_new = attr.ib(type=bool, default=False)
 
 
 def format_mac(mac):
@@ -70,6 +76,11 @@ class DeviceRegistry:
         self._store = hass.helpers.storage.Store(STORAGE_VERSION, STORAGE_KEY)
 
     @callback
+    def async_get(self, device_id: str) -> Optional[DeviceEntry]:
+        """Get device."""
+        return self.devices.get(device_id)
+
+    @callback
     def async_get_device(self, identifiers: set, connections: set):
         """Check if device is registered."""
         for device in self.devices.values():
@@ -82,7 +93,7 @@ class DeviceRegistry:
     def async_get_or_create(self, *, config_entry_id, connections=None,
                             identifiers=None, manufacturer=_UNDEF,
                             model=_UNDEF, name=_UNDEF, sw_version=_UNDEF,
-                            via_hub=None):
+                            via_device=None):
         """Get device. Create if it doesn't exist."""
         if not identifiers and not connections:
             return None
@@ -102,19 +113,19 @@ class DeviceRegistry:
         device = self.async_get_device(identifiers, connections)
 
         if device is None:
-            device = DeviceEntry()
+            device = DeviceEntry(is_new=True)
             self.devices[device.id] = device
 
-        if via_hub is not None:
-            hub_device = self.async_get_device({via_hub}, set())
-            hub_device_id = hub_device.id if hub_device else _UNDEF
+        if via_device is not None:
+            via = self.async_get_device({via_device}, set())
+            via_device_id = via.id if via else _UNDEF
         else:
-            hub_device_id = _UNDEF
+            via_device_id = _UNDEF
 
         return self._async_update_device(
             device.id,
             add_config_entry_id=config_entry_id,
-            hub_device_id=hub_device_id,
+            via_device_id=via_device_id,
             merge_connections=connections or _UNDEF,
             merge_identifiers=identifiers or _UNDEF,
             manufacturer=manufacturer,
@@ -124,21 +135,27 @@ class DeviceRegistry:
         )
 
     @callback
-    def async_update_device(self, device_id, *, area_id=_UNDEF):
+    def async_update_device(
+            self, device_id, *, area_id=_UNDEF, name_by_user=_UNDEF,
+            new_identifiers=_UNDEF):
         """Update properties of a device."""
-        return self._async_update_device(device_id, area_id=area_id)
+        return self._async_update_device(
+            device_id, area_id=area_id, name_by_user=name_by_user,
+            new_identifiers=new_identifiers)
 
     @callback
     def _async_update_device(self, device_id, *, add_config_entry_id=_UNDEF,
                              remove_config_entry_id=_UNDEF,
                              merge_connections=_UNDEF,
                              merge_identifiers=_UNDEF,
+                             new_identifiers=_UNDEF,
                              manufacturer=_UNDEF,
                              model=_UNDEF,
                              name=_UNDEF,
                              sw_version=_UNDEF,
-                             hub_device_id=_UNDEF,
-                             area_id=_UNDEF):
+                             via_device_id=_UNDEF,
+                             area_id=_UNDEF,
+                             name_by_user=_UNDEF):
         """Update device attributes."""
         old = self.devices[device_id]
 
@@ -166,12 +183,15 @@ class DeviceRegistry:
             if value is not _UNDEF and not value.issubset(old_value):
                 changes[attr_name] = old_value | value
 
+        if new_identifiers is not _UNDEF:
+            changes['identifiers'] = new_identifiers
+
         for attr_name, value in (
                 ('manufacturer', manufacturer),
                 ('model', model),
                 ('name', name),
                 ('sw_version', sw_version),
-                ('hub_device_id', hub_device_id),
+                ('via_device_id', via_device_id),
         ):
             if value is not _UNDEF and value != getattr(old, attr_name):
                 changes[attr_name] = value
@@ -179,12 +199,33 @@ class DeviceRegistry:
         if (area_id is not _UNDEF and area_id != old.area_id):
             changes['area_id'] = area_id
 
+        if (name_by_user is not _UNDEF and
+                name_by_user != old.name_by_user):
+            changes['name_by_user'] = name_by_user
+
+        if old.is_new:
+            changes['is_new'] = False
+
         if not changes:
             return old
 
         new = self.devices[device_id] = attr.evolve(old, **changes)
         self.async_schedule_save()
+
+        self.hass.bus.async_fire(EVENT_DEVICE_REGISTRY_UPDATED, {
+            'action': 'create' if 'is_new' in changes else 'update',
+            'device_id': new.id,
+        })
+
         return new
+
+    def _async_remove_device(self, device_id):
+        del self.devices[device_id]
+        self.hass.bus.async_fire(EVENT_DEVICE_REGISTRY_UPDATED, {
+            'action': 'remove',
+            'device_id': device_id,
+        })
+        self.async_schedule_save()
 
     async def async_load(self):
         """Load the device registry."""
@@ -206,9 +247,13 @@ class DeviceRegistry:
                     sw_version=device['sw_version'],
                     id=device['id'],
                     # Introduced in 0.79
-                    hub_device_id=device.get('hub_device_id'),
+                    # renamed in 0.95
+                    via_device_id=(
+                        device.get('via_device_id')
+                        or device.get('hub_device_id')),
                     # Introduced in 0.87
-                    area_id=device.get('area_id')
+                    area_id=device.get('area_id'),
+                    name_by_user=device.get('name_by_user')
                 )
 
         self.devices = devices
@@ -233,8 +278,9 @@ class DeviceRegistry:
                 'name': entry.name,
                 'sw_version': entry.sw_version,
                 'id': entry.id,
-                'hub_device_id': entry.hub_device_id,
-                'area_id': entry.area_id
+                'via_device_id': entry.via_device_id,
+                'area_id': entry.area_id,
+                'name_by_user': entry.name_by_user
             } for entry in self.devices.values()
         ]
 
@@ -243,10 +289,15 @@ class DeviceRegistry:
     @callback
     def async_clear_config_entry(self, config_entry_id):
         """Clear config entry from registry entries."""
+        remove = []
         for dev_id, device in self.devices.items():
-            if config_entry_id in device.config_entries:
+            if device.config_entries == {config_entry_id}:
+                remove.append(dev_id)
+            else:
                 self._async_update_device(
                     dev_id, remove_config_entry_id=config_entry_id)
+        for dev_id in remove:
+            self._async_remove_device(dev_id)
 
     @callback
     def async_clear_area_id(self, area_id: str) -> None:
@@ -257,16 +308,31 @@ class DeviceRegistry:
 
 
 @bind_hass
-async def async_get_registry(hass) -> DeviceRegistry:
+async def async_get_registry(hass: HomeAssistantType) -> DeviceRegistry:
     """Return device registry instance."""
-    task = hass.data.get(DATA_REGISTRY)
+    reg_or_evt = hass.data.get(DATA_REGISTRY)
 
-    if task is None:
-        async def _load_reg():
-            registry = DeviceRegistry(hass)
-            await registry.async_load()
-            return registry
+    if not reg_or_evt:
+        evt = hass.data[DATA_REGISTRY] = Event()
 
-        task = hass.data[DATA_REGISTRY] = hass.async_create_task(_load_reg())
+        reg = DeviceRegistry(hass)
+        await reg.async_load()
 
-    return await task
+        hass.data[DATA_REGISTRY] = reg
+        evt.set()
+        return reg
+
+    if isinstance(reg_or_evt, Event):
+        evt = reg_or_evt
+        await evt.wait()
+        return cast(DeviceRegistry, hass.data.get(DATA_REGISTRY))
+
+    return cast(DeviceRegistry, reg_or_evt)
+
+
+@callback
+def async_entries_for_area(registry: DeviceRegistry, area_id: str) \
+        -> List[DeviceEntry]:
+    """Return entries that match an area."""
+    return [device for device in registry.devices.values()
+            if device.area_id == area_id]

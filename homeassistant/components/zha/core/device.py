@@ -8,6 +8,7 @@ import asyncio
 from enum import Enum
 import logging
 
+from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect, async_dispatcher_send
 )
@@ -16,10 +17,10 @@ from .const import (
     ATTR_CLUSTER_ID, ATTR_ATTRIBUTE, ATTR_VALUE, ATTR_COMMAND, SERVER,
     ATTR_COMMAND_TYPE, ATTR_ARGS, CLIENT_COMMANDS, SERVER_COMMANDS,
     ATTR_ENDPOINT_ID, IEEE, MODEL, NAME, UNKNOWN, QUIRK_APPLIED,
-    QUIRK_CLASS, BASIC_CHANNEL
+    QUIRK_CLASS, ZDO_CHANNEL, MANUFACTURER_CODE, POWER_SOURCE, MAINS_POWERED,
+    BATTERY_OR_UNKNOWN, NWK
 )
 from .channels import EventRelayChannel
-from .channels.general import BasicChannel
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class ZHADevice:
             self._model = zigpy_device.endpoints[ept_id].model
         self._zha_gateway = zha_gateway
         self.cluster_channels = {}
-        self._relay_channels = []
+        self._relay_channels = {}
         self._all_channels = []
         self._name = "{} {}".format(
             self.manufacturer,
@@ -68,7 +69,6 @@ class ZHADevice:
             self._zigpy_device.__class__.__module__,
             self._zigpy_device.__class__.__name__
         )
-        self.power_source = None
         self.status = DeviceStatus.CREATED
 
     @property
@@ -83,13 +83,20 @@ class ZHADevice:
 
     @property
     def manufacturer(self):
-        """Return ieee address for device."""
+        """Return manufacturer for device."""
         return self._manufacturer
 
     @property
     def model(self):
-        """Return ieee address for device."""
+        """Return model for device."""
         return self._model
+
+    @property
+    def manufacturer_code(self):
+        """Return the manufacturer code for the device."""
+        if self._zigpy_device.node_desc.is_valid:
+            return self._zigpy_device.node_desc.manufacturer_code
+        return None
 
     @property
     def nwk(self):
@@ -112,10 +119,29 @@ class ZHADevice:
         return self._zigpy_device.last_seen
 
     @property
-    def manufacturer_code(self):
-        """Return manufacturer code for device."""
-        # will eventually get this directly from Zigpy
-        return None
+    def is_mains_powered(self):
+        """Return true if device is mains powered."""
+        return self._zigpy_device.node_desc.is_mains_powered
+
+    @property
+    def power_source(self):
+        """Return the power source for the device."""
+        return MAINS_POWERED if self.is_mains_powered else BATTERY_OR_UNKNOWN
+
+    @property
+    def is_router(self):
+        """Return true if this is a routing capable device."""
+        return self._zigpy_device.node_desc.is_router
+
+    @property
+    def is_coordinator(self):
+        """Return true if this device represents the coordinator."""
+        return self._zigpy_device.node_desc.is_coordinator
+
+    @property
+    def is_end_device(self):
+        """Return true if this device is an end device."""
+        return self._zigpy_device.node_desc.is_end_device
 
     @property
     def gateway(self):
@@ -136,6 +162,10 @@ class ZHADevice:
     def available(self):
         """Return True if sensor is available."""
         return self._available
+
+    def set_available(self, available):
+        """Set availability from restore and prevent signals."""
+        self._available = available
 
     def update_available(self, available):
         """Set sensor availability."""
@@ -159,11 +189,14 @@ class ZHADevice:
         ieee = str(self.ieee)
         return {
             IEEE: ieee,
+            NWK: self.nwk,
             ATTR_MANUFACTURER: self.manufacturer,
             MODEL: self.model,
             NAME: self.name or ieee,
             QUIRK_APPLIED: self.quirk_applied,
-            QUIRK_CLASS: self.quirk_class
+            QUIRK_CLASS: self.quirk_class,
+            MANUFACTURER_CODE: self.manufacturer_code,
+            POWER_SOURCE: self.power_source
         }
 
     def add_cluster_channel(self, cluster_channel):
@@ -172,49 +205,104 @@ class ZHADevice:
         if cluster_channel.name is POWER_CONFIGURATION_CHANNEL and \
                 POWER_CONFIGURATION_CHANNEL in self.cluster_channels:
             return
-        self._all_channels.append(cluster_channel)
+
         if isinstance(cluster_channel, EventRelayChannel):
-            self._relay_channels.append(cluster_channel)
+            self._relay_channels[cluster_channel.unique_id] = cluster_channel
+            self._all_channels.append(cluster_channel)
         else:
             self.cluster_channels[cluster_channel.name] = cluster_channel
+            self._all_channels.append(cluster_channel)
+
+    def get_channels_to_configure(self):
+        """Get a deduped list of channels for configuration.
+
+        This goes through all channels and gets a unique list of channels to
+        configure. It first assembles a unique list of channels that are part
+        of entities while stashing relay channels off to the side. It then
+        takse the stashed relay channels and adds them to the list of channels
+        that will be returned if there isn't a channel in the list for that
+        cluster already. This is done to ensure each cluster is only configured
+        once.
+        """
+        channel_keys = []
+        channels = []
+        relay_channels = self._relay_channels.values()
+
+        def get_key(channel):
+            channel_key = "ZDO"
+            if hasattr(channel.cluster, 'cluster_id'):
+                channel_key = "{}_{}".format(
+                    channel.cluster.endpoint.endpoint_id,
+                    channel.cluster.cluster_id
+                )
+            return channel_key
+
+        # first we get all unique non event channels
+        for channel in self.all_channels:
+            c_key = get_key(channel)
+            if c_key not in channel_keys and channel not in relay_channels:
+                channel_keys.append(c_key)
+                channels.append(channel)
+
+        # now we get event channels that still need their cluster configured
+        for channel in relay_channels:
+            channel_key = get_key(channel)
+            if channel_key not in channel_keys:
+                channel_keys.append(channel_key)
+                channels.append(channel)
+        return channels
 
     async def async_configure(self):
         """Configure the device."""
         _LOGGER.debug('%s: started configuration', self.name)
-        await self._execute_channel_tasks('async_configure')
+        await self._execute_channel_tasks(
+            self.get_channels_to_configure(), 'async_configure')
         _LOGGER.debug('%s: completed configuration', self.name)
+        entry = self.gateway.zha_storage.async_create_or_update(self)
+        _LOGGER.debug('%s: stored in registry: %s', self.name, entry)
 
     async def async_initialize(self, from_cache=False):
         """Initialize channels."""
         _LOGGER.debug('%s: started initialization', self.name)
-        await self._execute_channel_tasks('async_initialize', from_cache)
-        self.power_source = self.cluster_channels.get(
-            BASIC_CHANNEL).get_power_source()
+        await self._execute_channel_tasks(
+            self.all_channels, 'async_initialize', from_cache)
         _LOGGER.debug(
             '%s: power source: %s',
             self.name,
-            BasicChannel.POWER_SOURCES.get(self.power_source)
+            self.power_source
         )
         self.status = DeviceStatus.INITIALIZED
         _LOGGER.debug('%s: completed initialization', self.name)
 
-    async def _execute_channel_tasks(self, task_name, *args):
+    async def _execute_channel_tasks(self, channels, task_name, *args):
         """Gather and execute a set of CHANNEL tasks."""
         channel_tasks = []
-        for channel in self.all_channels:
-            channel_tasks.append(
-                self._async_create_task(channel, task_name, *args))
+        semaphore = asyncio.Semaphore(3)
+        zdo_task = None
+        for channel in channels:
+            if channel.name == ZDO_CHANNEL:
+                # pylint: disable=E1111
+                if zdo_task is None:  # We only want to do this once
+                    zdo_task = self._async_create_task(
+                        semaphore, channel, task_name, *args)
+            else:
+                channel_tasks.append(
+                    self._async_create_task(
+                        semaphore, channel, task_name, *args))
+        if zdo_task is not None:
+            await zdo_task
         await asyncio.gather(*channel_tasks)
 
-    async def _async_create_task(self, channel, func_name, *args):
+    async def _async_create_task(self, semaphore, channel, func_name, *args):
         """Configure a single channel on this device."""
         try:
-            await getattr(channel, func_name)(*args)
-            _LOGGER.debug('%s: channel: %s %s stage succeeded',
-                          self.name,
-                          "{}-{}".format(
-                              channel.name, channel.unique_id),
-                          func_name)
+            async with semaphore:
+                await getattr(channel, func_name)(*args)
+                _LOGGER.debug('%s: channel: %s %s stage succeeded',
+                              self.name,
+                              "{}-{}".format(
+                                  channel.name, channel.unique_id),
+                              func_name)
         except Exception as ex:  # pylint: disable=broad-except
             _LOGGER.warning(
                 '%s channel: %s %s stage failed ex: %s',
@@ -229,7 +317,13 @@ class ZHADevice:
         if self._unsub:
             self._unsub()
 
-    async def get_clusters(self):
+    @callback
+    def async_update_last_seen(self, last_seen):
+        """Set last seen on the zigpy device."""
+        self._zigpy_device.last_seen = last_seen
+
+    @callback
+    def async_get_clusters(self):
         """Get all clusters for this device."""
         return {
             ep_id: {
@@ -239,25 +333,42 @@ class ZHADevice:
             if ep_id != 0
         }
 
-    async def get_cluster(self, endpoint_id, cluster_id, cluster_type=IN):
+    @callback
+    def async_get_std_clusters(self):
+        """Get ZHA and ZLL clusters for this device."""
+        from zigpy.profiles import zha, zll
+        return {
+            ep_id: {
+                IN: endpoint.in_clusters,
+                OUT: endpoint.out_clusters
+            } for (ep_id, endpoint) in self._zigpy_device.endpoints.items()
+            if ep_id != 0 and endpoint.profile_id in (
+                zha.PROFILE_ID,
+                zll.PROFILE_ID
+            )
+        }
+
+    @callback
+    def async_get_cluster(self, endpoint_id, cluster_id, cluster_type=IN):
         """Get zigbee cluster from this entity."""
-        clusters = await self.get_clusters()
+        clusters = self.async_get_clusters()
         return clusters[endpoint_id][cluster_type][cluster_id]
 
-    async def get_cluster_attributes(self, endpoint_id, cluster_id,
+    @callback
+    def async_get_cluster_attributes(self, endpoint_id, cluster_id,
                                      cluster_type=IN):
         """Get zigbee attributes for specified cluster."""
-        cluster = await self.get_cluster(endpoint_id, cluster_id,
+        cluster = self.async_get_cluster(endpoint_id, cluster_id,
                                          cluster_type)
         if cluster is None:
             return None
         return cluster.attributes
 
-    async def get_cluster_commands(self, endpoint_id, cluster_id,
+    @callback
+    def async_get_cluster_commands(self, endpoint_id, cluster_id,
                                    cluster_type=IN):
         """Get zigbee commands for specified cluster."""
-        cluster = await self.get_cluster(endpoint_id, cluster_id,
-                                         cluster_type)
+        cluster = self.async_get_cluster(endpoint_id, cluster_id, cluster_type)
         if cluster is None:
             return None
         return {
@@ -269,8 +380,7 @@ class ZHADevice:
                                      attribute, value, cluster_type=IN,
                                      manufacturer=None):
         """Write a value to a zigbee attribute for a cluster in this entity."""
-        cluster = await self.get_cluster(
-            endpoint_id, cluster_id, cluster_type)
+        cluster = self.async_get_cluster(endpoint_id, cluster_id, cluster_type)
         if cluster is None:
             return None
 
@@ -281,7 +391,7 @@ class ZHADevice:
                 manufacturer=manufacturer
             )
             _LOGGER.debug(
-                'set: %s for attr: %s to cluster: %s for entity: %s - res: %s',
+                'set: %s for attr: %s to cluster: %s for ept: %s - res: %s',
                 value,
                 attribute,
                 cluster_id,
@@ -304,8 +414,7 @@ class ZHADevice:
                                     command_type, args, cluster_type=IN,
                                     manufacturer=None):
         """Issue a command against specified zigbee cluster on this entity."""
-        cluster = await self.get_cluster(
-            endpoint_id, cluster_id, cluster_type)
+        cluster = self.async_get_cluster(endpoint_id, cluster_id, cluster_type)
         if cluster is None:
             return None
         response = None

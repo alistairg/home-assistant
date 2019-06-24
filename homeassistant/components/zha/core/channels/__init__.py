@@ -5,6 +5,7 @@ For more details about this component, please refer to the documentation at
 https://home-assistant.io/components/zha/
 """
 import asyncio
+from concurrent.futures import TimeoutError as Timeout
 from enum import Enum
 from functools import wraps
 import logging
@@ -13,12 +14,13 @@ from random import uniform
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from ..helpers import (
-    bind_configure_reporting, construct_unique_id,
-    safe_read, get_attr_id_by_name)
+    configure_reporting, construct_unique_id,
+    safe_read, get_attr_id_by_name, bind_cluster)
 from ..const import (
-    CLUSTER_REPORT_CONFIGS, REPORT_CONFIG_DEFAULT, SIGNAL_ATTR_UPDATED,
-    ATTRIBUTE_CHANNEL, EVENT_RELAY_CHANNEL
+    REPORT_CONFIG_DEFAULT, SIGNAL_ATTR_UPDATED, ATTRIBUTE_CHANNEL,
+    EVENT_RELAY_CHANNEL, ZDO_CHANNEL
 )
+from ..registries import CLUSTER_REPORT_CONFIGS
 
 ZIGBEE_CHANNEL_REGISTRY = {}
 _LOGGER = logging.getLogger(__name__)
@@ -42,7 +44,6 @@ def decorate_command(channel, command):
     """Wrap a cluster command to make it safe."""
     @wraps(command)
     async def wrapper(*args, **kwds):
-        from zigpy.zcl.foundation import Status
         from zigpy.exceptions import DeliveryError
         try:
             result = await command(*args, **kwds)
@@ -52,13 +53,16 @@ def decorate_command(channel, command):
                           "{}: {}".format("with args", args),
                           "{}: {}".format("with kwargs", kwds),
                           "{}: {}".format("and result", result))
-            if isinstance(result, bool):
-                return result
-            return result[1] is Status.SUCCESS
-        except DeliveryError:
-            _LOGGER.debug("%s: command failed: %s", channel.unique_id,
-                          command.__name__)
-            return False
+            return result
+
+        except (DeliveryError, Timeout) as ex:
+            _LOGGER.debug(
+                "%s: command failed: %s exception: %s",
+                channel.unique_id,
+                command.__name__,
+                str(ex)
+            )
+            return ex
     return wrapper
 
 
@@ -73,9 +77,14 @@ class ChannelStatus(Enum):
 class ZigbeeChannel:
     """Base channel for a Zigbee cluster."""
 
+    CHANNEL_NAME = None
+
     def __init__(self, cluster, device):
         """Initialize ZigbeeChannel."""
-        self.name = 'channel_{}'.format(cluster.cluster_id)
+        self._channel_name = cluster.ep_attribute
+        if self.CHANNEL_NAME:
+            self._channel_name = self.CHANNEL_NAME
+        self._generic_id = 'channel_0x{:04x}'.format(cluster.cluster_id)
         self._cluster = cluster
         self._zha_device = device
         self._unique_id = construct_unique_id(cluster)
@@ -85,6 +94,11 @@ class ZigbeeChannel:
         )
         self._status = ChannelStatus.CREATED
         self._cluster.add_listener(self)
+
+    @property
+    def generic_id(self):
+        """Return the generic id for this channel."""
+        return self._generic_id
 
     @property
     def unique_id(self):
@@ -102,6 +116,11 @@ class ZigbeeChannel:
         return self._zha_device
 
     @property
+    def name(self) -> str:
+        """Return friendly name."""
+        return self._channel_name
+
+    @property
     def status(self):
         """Return the status of the channel."""
         return self._status
@@ -114,24 +133,25 @@ class ZigbeeChannel:
         """Set cluster binding and attribute reporting."""
         manufacturer = None
         manufacturer_code = self._zha_device.manufacturer_code
-        if self.cluster.cluster_id >= 0xfc00 and manufacturer_code:
-            manufacturer = manufacturer_code
+        # Xiaomi devices don't need this and it disrupts pairing
+        if self._zha_device.manufacturer != 'LUMI':
+            if self.cluster.cluster_id >= 0xfc00 and manufacturer_code:
+                manufacturer = manufacturer_code
+            await bind_cluster(self._unique_id, self.cluster)
+            if not self.cluster.bind_only:
+                for report_config in self._report_config:
+                    attr = report_config.get('attr')
+                    min_report_interval, max_report_interval, change = \
+                        report_config.get('config')
+                    await configure_reporting(
+                        self._unique_id, self.cluster, attr,
+                        min_report=min_report_interval,
+                        max_report=max_report_interval,
+                        reportable_change=change,
+                        manufacturer=manufacturer
+                    )
+                    await asyncio.sleep(uniform(0.1, 0.5))
 
-        skip_bind = False  # bind cluster only for the 1st configured attr
-        for report_config in self._report_config:
-            attr = report_config.get('attr')
-            min_report_interval, max_report_interval, change = \
-                report_config.get('config')
-            await bind_configure_reporting(
-                self._unique_id, self.cluster, attr,
-                min_report=min_report_interval,
-                max_report=max_report_interval,
-                reportable_change=change,
-                skip_bind=skip_bind,
-                manufacturer=manufacturer
-            )
-            skip_bind = True
-            await asyncio.sleep(uniform(0.1, 0.5))
         _LOGGER.debug(
             "%s: finished channel configuration",
             self._unique_id
@@ -140,6 +160,11 @@ class ZigbeeChannel:
 
     async def async_initialize(self, from_cache):
         """Initialize channel."""
+        _LOGGER.debug(
+            'initializing channel: %s from_cache: %s',
+            self._channel_name,
+            from_cache
+        )
         self._status = ChannelStatus.INITIALIZED
 
     @callback
@@ -176,11 +201,16 @@ class ZigbeeChannel:
 
     async def get_attribute_value(self, attribute, from_cache=True):
         """Get the value for an attribute."""
+        manufacturer = None
+        manufacturer_code = self._zha_device.manufacturer_code
+        if self.cluster.cluster_id >= 0xfc00 and manufacturer_code:
+            manufacturer = manufacturer_code
         result = await safe_read(
             self._cluster,
             [attribute],
             allow_cache=from_cache,
-            only_cache=from_cache
+            only_cache=from_cache,
+            manufacturer=manufacturer
         )
         return result.get(attribute)
 
@@ -200,20 +230,21 @@ class ZigbeeChannel:
 class AttributeListeningChannel(ZigbeeChannel):
     """Channel for attribute reports from the cluster."""
 
+    CHANNEL_NAME = ATTRIBUTE_CHANNEL
+
     def __init__(self, cluster, device):
         """Initialize AttributeListeningChannel."""
         super().__init__(cluster, device)
-        self.name = ATTRIBUTE_CHANNEL
         attr = self._report_config[0].get('attr')
         if isinstance(attr, str):
-            self._value_attribute = get_attr_id_by_name(self.cluster, attr)
+            self.value_attribute = get_attr_id_by_name(self.cluster, attr)
         else:
-            self._value_attribute = attr
+            self.value_attribute = attr
 
     @callback
     def attribute_updated(self, attrid, value):
         """Handle attribute updates on this cluster."""
-        if attrid == self._value_attribute:
+        if attrid == self.value_attribute:
             async_dispatcher_send(
                 self._zha_device.hass,
                 "{}_{}".format(self.unique_id, SIGNAL_ATTR_UPDATED),
@@ -232,7 +263,7 @@ class ZDOChannel:
 
     def __init__(self, cluster, device):
         """Initialize ZDOChannel."""
-        self.name = 'zdo'
+        self.name = ZDO_CHANNEL
         self._cluster = cluster
         self._zha_device = device
         self._status = ChannelStatus.CREATED
@@ -266,6 +297,9 @@ class ZDOChannel:
 
     async def async_initialize(self, from_cache):
         """Initialize channel."""
+        entry = self._zha_device.gateway.zha_storage.async_get_or_create(
+            self._zha_device)
+        _LOGGER.debug("entry loaded from storage: %s", entry)
         self._status = ChannelStatus.INITIALIZED
 
     async def async_configure(self):
@@ -276,10 +310,7 @@ class ZDOChannel:
 class EventRelayChannel(ZigbeeChannel):
     """Event relay that can be attached to zigbee clusters."""
 
-    def __init__(self, cluster, device):
-        """Initialize EventRelayChannel."""
-        super().__init__(cluster, device)
-        self.name = EVENT_RELAY_CHANNEL
+    CHANNEL_NAME = EVENT_RELAY_CHANNEL
 
     @callback
     def attribute_updated(self, attrid, value):
