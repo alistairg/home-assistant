@@ -177,8 +177,11 @@ class Life360Scanner:
         return prev_seen
 
     def _update_member(self, member, dev_id):
-        loc = member.get('location', {})
-        last_seen = _utc_from_ts(loc.get('timestamp'))
+        loc = member.get('location')
+        try:
+            last_seen = _utc_from_ts(loc.get('timestamp'))
+        except AttributeError:
+            last_seen = None
         prev_seen = self._prev_seen(dev_id, last_seen)
 
         if not loc:
@@ -291,7 +294,6 @@ class Life360Scanner:
             member_id = member['id']
             if member_id in members_updated:
                 continue
-            members_updated.append(member_id)
             err_key = 'Member data'
             try:
                 first = member.get('firstName')
@@ -315,6 +317,7 @@ class Life360Scanner:
             self._ok(err_key)
 
             if include_member and sharing:
+                members_updated.append(member_id)
                 self._update_member(member, dev_id)
 
     def _update_life360(self, now=None):
