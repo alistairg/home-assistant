@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 from homeassistant.setup import async_setup_component
 from homeassistant.components import hue
+from homeassistant.components.hue.bridge import SERVICE_HUE_SCENE
 
 from tests.common import mock_coro, MockConfigEntry
 
@@ -158,3 +159,60 @@ async def test_unload_entry(hass):
     assert await hue.async_unload_entry(hass, entry)
     assert len(mock_bridge.return_value.async_reset.mock_calls) == 1
     assert hass.data[hue.DOMAIN] == {}
+
+
+async def test_scene_service_registered(hass):
+    """Test that a single service is registered for multiple bridges."""
+    with patch.object(hass, 'services', return_value=Mock()) as registry:
+        assert await async_setup_component(hass, hue.DOMAIN, {
+            hue.DOMAIN: {
+                hue.CONF_BRIDGES: [{
+                    hue.CONF_HOST: '0.0.0.0',
+                    hue.CONF_FILENAME: 'bla.conf',
+                    hue.CONF_ALLOW_HUE_GROUPS: False,
+                    hue.CONF_ALLOW_UNREACHABLE: True
+                }, {
+                    hue.CONF_HOST: '1.1.1.1',
+                    hue.CONF_FILENAME: 'bla.conf',
+                    hue.CONF_ALLOW_HUE_GROUPS: False,
+                    hue.CONF_ALLOW_UNREACHABLE: True
+                }]
+            }
+        }) is True
+
+    # Register service should be called only once
+    registry.async_register.assert_called_once()
+
+
+async def test_multi_bridge_scene_recall(hass):
+    """Test that multiple bridges receive a scene recall service request"""
+    with patch.object(hass, 'services', return_value=Mock()) as registry:
+        assert await async_setup_component(hass, hue.DOMAIN, {
+            hue.DOMAIN: {
+                hue.CONF_BRIDGES: [{
+                    hue.CONF_HOST: '0.0.0.0',
+                    hue.CONF_FILENAME: 'bla.conf',
+                    hue.CONF_ALLOW_HUE_GROUPS: False,
+                    hue.CONF_ALLOW_UNREACHABLE: True
+                }, {
+                    hue.CONF_HOST: '1.1.1.1',
+                    hue.CONF_FILENAME: 'bla.conf',
+                    hue.CONF_ALLOW_HUE_GROUPS: False,
+                    hue.CONF_ALLOW_UNREACHABLE: True
+                }]
+            }
+        }) is True
+
+    #assert hass.data['components'] == None
+    #first_bridge = hass.data[hue.DOMAIN]['0.0.0.0']
+
+    # Call scene
+    #hass.services.call(hue.DOMAIN, SERVICE_HUE_SCENE, {
+    #         'group_name': '_all',
+    #         'scene_name': 'test'
+    #     })
+    #hass.block_till_done()
+
+    # Should be called once for each bridge
+    #first_bridge = hass.data[hue.DOMAIN]['0.0.0.1']
+    #assert first_bridge

@@ -5,6 +5,7 @@ import pytest
 
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.components.hue import bridge, errors
+from homeassistant.components.hue.bridge import ATTR_GROUP_NAME, ATTR_SCENE_NAME
 
 from tests.common import mock_coro
 
@@ -87,7 +88,7 @@ async def test_reset_unloads_entry_if_setup():
     with patch.object(bridge, 'get_bridge', return_value=mock_coro(Mock())):
         assert await hue_bridge.async_setup() is True
 
-    assert len(hass.services.async_register.mock_calls) == 1
+    assert not hass.services.async_register.mock_calls
     assert len(hass.config_entries.async_forward_entry_setup.mock_calls) == 3
 
     hass.config_entries.async_forward_entry_unload.return_value = \
@@ -95,4 +96,5 @@ async def test_reset_unloads_entry_if_setup():
     assert await hue_bridge.async_reset()
 
     assert len(hass.config_entries.async_forward_entry_unload.mock_calls) == 3
-    assert len(hass.services.async_remove.mock_calls) == 1
+    assert not hass.services.async_remove.mock_calls
+
