@@ -257,3 +257,8 @@ class HomeKitClimateDevice(HomeKitEntity, ClimateDevice):
     def temperature_unit(self):
         """Return the unit of measurement."""
         return TEMP_CELSIUS
+
+    @property
+    def state_attributes(self):
+        """Merge the base class with any custom characteristics."""
+        return {**super().state_attributes, **self.custom_state_attributes}

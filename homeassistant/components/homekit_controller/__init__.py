@@ -3,16 +3,36 @@ import logging
 
 import homekit
 from homekit.model.characteristics import CharacteristicsTypes
+import voluptuous as vol
 
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import callback
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
+import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.entity import Entity
 
 from .config_flow import normalize_hkid
 from .connection import HKDevice, get_accessory_information
-from .const import CONTROLLER, DOMAIN, ENTITY_MAP, KNOWN_DEVICES
+from .const import (
+    ATTR_CHARACTERISTIC_ID,
+    ATTR_CHARACTERISTIC_VALUE,
+    CONTROLLER,
+    DOMAIN,
+    ENTITY_MAP,
+    ENTITY_REGISTRATION,
+    KNOWN_DEVICES,
+    SERVICE_HOMEKITCONTROLLER_SET_CUSTOM,
+)
 from .storage import EntityMapStorage
+
+SET_CUSTOM_CHARACTERISTIC_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_ids,
+        vol.Required(ATTR_CHARACTERISTIC_ID): cv.string,
+        vol.Required(ATTR_CHARACTERISTIC_VALUE): vol.Any(cv.Number, cv.string),
+    }
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +52,7 @@ class HomeKitEntity(Entity):
         self._iid = devinfo["iid"]
         self._features = 0
         self._chars = {}
+        self._custom_chars = {}
         self.setup()
 
         self._signals = []
@@ -43,6 +64,7 @@ class HomeKitEntity(Entity):
                 self._accessory.signal_state_updated, self.async_state_changed
             )
         )
+        self.hass.data[ENTITY_REGISTRATION][self.entity_id] = self
 
         self._accessory.add_pollable_characteristics(self.pollable_characteristics)
 
@@ -53,6 +75,19 @@ class HomeKitEntity(Entity):
         for signal_remove in self._signals:
             signal_remove()
         self._signals.clear()
+
+    async def set_custom_characteristic_value(self, char_id, value):
+        """Set new target humidity."""
+        iid = self._chars.get(char_id)
+        if iid is not None:
+            characteristics = [
+                {"aid": self._aid, "iid": self._chars[char_id], "value": value}
+            ]
+            await self._accessory.put_characteristics(characteristics)
+        else:
+            _LOGGER.error(
+                "Cannot set value - invalid custom characteristic id '%s'", char_id
+            )
 
     @property
     def should_poll(self) -> bool:
@@ -86,10 +121,28 @@ class HomeKitEntity(Entity):
                     except KeyError:
                         # If a KeyError is raised its a non-standard
                         # characteristic. We must ignore it in this case.
+                        _LOGGER.debug("1 Custom characteristic - %s", char)
+                        self._setup_custom_characteristic(char)
                         continue
                     if uuid not in characteristic_types:
+                        _LOGGER.debug(
+                            "2 Known, but irrelevant, characteristic - %s", char
+                        )
                         continue
                     self._setup_characteristic(char)
+
+    def _setup_custom_characteristic(self, char):
+        """Configure an entity with custom HomeKit characteristic metadata."""
+        # Build up a list of (aid, iid) tuples to poll on update()
+        self.pollable_characteristics.append((self._aid, char["iid"]))
+
+        # Build a map of ctype -> iid, using the type as the name
+        short_name = escape_characteristic_name(char["type"])
+        self._chars[short_name] = char["iid"]
+        self._char_names[char["iid"]] = short_name
+
+        # Track this custom characteristic so it can be separately reported
+        self._custom_chars[short_name] = None
 
     def _setup_characteristic(self, char):
         """Configure an entity based on a HomeKit characteristics metadata."""
@@ -135,11 +188,16 @@ class HomeKitEntity(Entity):
 
             # Callback to update the entity with this characteristic value
             char_name = escape_characteristic_name(self._char_names[iid])
-            update_fn = getattr(self, f"_update_{char_name}", None)
-            if not update_fn:
-                continue
+            if char_name not in self._custom_chars.keys():
+                update_fn = getattr(self, f"_update_{char_name}", None)
+                if not update_fn:
+                    _LOGGER.debug("No update function for %s", char_name)
+                    continue
 
-            update_fn(result["value"])
+                update_fn(result["value"])
+            else:
+                _LOGGER.debug("Updating custom attribute")
+                self._custom_chars[char_name] = result["value"]
 
         self.async_write_ha_state()
 
@@ -179,6 +237,11 @@ class HomeKitEntity(Entity):
             device_info["via_device"] = (DOMAIN, "serial-number", bridge_serial)
 
         return device_info
+
+    @property
+    def custom_state_attributes(self):
+        """Return any custom characteristics, and their values."""
+        return self._custom_chars
 
     def get_characteristic_types(self):
         """Define the homekit characteristics the entity cares about."""
@@ -225,6 +288,25 @@ async def async_setup(hass, config):
 
     hass.data[CONTROLLER] = homekit.Controller()
     hass.data[KNOWN_DEVICES] = {}
+    hass.data[ENTITY_REGISTRATION] = {}
+
+    # Register custom accessory service
+    async def handle_set_custom_characteristic(service):
+        """Handle set custom characteristic service call."""
+        entity_ids = service.data.get(ATTR_ENTITY_ID)
+        char_id = service.data.get(ATTR_CHARACTERISTIC_ID)
+        char_value = service.data.get(ATTR_CHARACTERISTIC_VALUE)
+        _LOGGER.debug("Set custom %s to %s on %s", char_id, char_value, entity_ids)
+        for entity_id in entity_ids:
+            entity = hass.data[ENTITY_REGISTRATION][entity_id]
+            await entity.set_custom_characteristic_value(char_id, char_value)
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_HOMEKITCONTROLLER_SET_CUSTOM,
+        handle_set_custom_characteristic,
+        schema=SET_CUSTOM_CHARACTERISTIC_SCHEMA,
+    )
 
     return True
 

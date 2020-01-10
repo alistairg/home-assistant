@@ -4,9 +4,14 @@ DOMAIN = "homekit_controller"
 KNOWN_DEVICES = f"{DOMAIN}-devices"
 CONTROLLER = f"{DOMAIN}-controller"
 ENTITY_MAP = f"{DOMAIN}-entity-map"
+ENTITY_REGISTRATION = f"{DOMAIN}-entity-registration"
 
 HOMEKIT_DIR = ".homekit"
 PAIRING_FILE = "pairing.json"
+
+SERVICE_HOMEKITCONTROLLER_SET_CUSTOM = "set_custom_characteristic"
+ATTR_CHARACTERISTIC_ID = "char_name"
+ATTR_CHARACTERISTIC_VALUE = "char_value"
 
 # Mapping from Homekit type to component.
 HOMEKIT_ACCESSORY_DISPATCH = {
