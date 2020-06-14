@@ -4,7 +4,7 @@
   "config_flow": true,
   "documentation": "https://www.home-assistant.io/integrations/noon",
   "requirements": [
-    "pynoon==0.0.16"
+    "aiopynoon==0.0.1"
   ],
   "ssdp": [],
   "zeroconf": [],

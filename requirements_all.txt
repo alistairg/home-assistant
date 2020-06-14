@@ -223,6 +223,9 @@ aiopvpc==1.0.2
 # homeassistant.components.webostv
 aiopylgtv==0.3.3
 
+# homeassistant.components.noon
+aiopynoon==0.0.1
+
 # homeassistant.components.switcher_kis
 aioswitcher==1.2.0
 
@@ -1490,9 +1493,6 @@ pynetgear==0.6.1
 
 # homeassistant.components.netio
 pynetio==0.1.9.1
-
-# homeassistant.components.noon
-pynoon==0.0.16
 
 # homeassistant.components.nuki
 pynuki==1.3.7

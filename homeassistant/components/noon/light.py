@@ -2,6 +2,8 @@
 import logging
 from typing import Any
 
+from aiopynoon.line import LINE_STATE_ON
+
 from homeassistant.components.light import (
     ATTR_BRIGHTNESS,
     ATTR_TRANSITION,
@@ -11,7 +13,6 @@ from homeassistant.components.light import (
 )
 from homeassistant.helpers.restore_state import RestoreEntity
 
-from .aiopynoon.line import LINE_STATE_ON
 from .const import DATA_NOON, DOMAIN
 from .entity import NoonEntityMixin
 
@@ -82,13 +83,12 @@ class NoonLine(NoonEntityMixin, RestoreEntity, LightEntity):
         """Return the device_info of the device."""
         return {
             "identifiers": {
-                (DOMAIN, self._line.parent_space.guid),
                 (DOMAIN, self._line.guid),
+                (DOMAIN, self._line.parent_space.guid),
             },
             "name": self._noon_entity.name,
             "manufacturer": "Noon Home",
             "model": "Line",
-            "via_device": (DOMAIN, self._line.parent_space.guid),
         }
 
     @property

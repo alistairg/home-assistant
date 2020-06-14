@@ -2,6 +2,8 @@
 import asyncio
 import logging
 
+from aiopynoon import Noon
+from aiopynoon.exceptions import NoonAuthenticationError
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
@@ -10,8 +12,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import aiohttp_client
 
-from .aiopynoon import Noon
-from .aiopynoon.exceptions import NoonAuthenticationError
 from .const import DATA_NOON, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ PLATFORMS = ["light", "switch"]
 
 
 async def async_setup_noon(hass: HomeAssistant, config):
-    """Set up the Noon Home component."""
+    """Set up the Noon Home platform."""
 
     entry_id = config.entry_id
     session = aiohttp_client.async_get_clientsession(hass)
@@ -61,8 +61,9 @@ async def async_setup_noon(hass: HomeAssistant, config):
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
-    """Set up the domain."""
+    """Set up the platform."""
     hass.data[DOMAIN] = {}
+
     return True
 
 

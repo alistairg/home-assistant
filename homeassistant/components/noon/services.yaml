@@ -1,0 +1,12 @@
+set_scene:
+  description: Sets a Noon scene
+  fields:
+    entity_id:
+      description: ID of the Noon Room Director switch
+      example: switch.living_room
+    scene_name:
+      description: Name of the Noon scene
+      example: Bright
+    scene_active:
+      description: Is the scene active (on)
+      example: true

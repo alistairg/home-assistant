@@ -1,14 +1,14 @@
 """Config flow for Noon Home integration."""
 import logging
 
+from aiopynoon import Noon
+from aiopynoon.exceptions import NoonAuthenticationError
 import voluptuous as vol
 
 from homeassistant import config_entries, exceptions
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers import aiohttp_client
 
-from .aiopynoon import Noon
-from .aiopynoon.exceptions import NoonAuthenticationError
 from .const import DOMAIN  # pylint:disable=unused-import
 
 _LOGGER = logging.getLogger(__name__)
