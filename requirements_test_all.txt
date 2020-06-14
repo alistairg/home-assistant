@@ -647,6 +647,9 @@ pymonoprice==0.3
 # homeassistant.components.myq
 pymyq==2.0.3
 
+# homeassistant.components.noon
+pynoon==0.0.16
+
 # homeassistant.components.nut
 pynut2==2.1.2
 

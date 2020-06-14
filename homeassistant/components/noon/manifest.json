@@ -1,0 +1,16 @@
+{
+  "domain": "noon",
+  "name": "Noon Home",
+  "config_flow": true,
+  "documentation": "https://www.home-assistant.io/integrations/noon",
+  "requirements": [
+    "pynoon==0.0.16"
+  ],
+  "ssdp": [],
+  "zeroconf": [],
+  "homekit": {},
+  "dependencies": [],
+  "codeowners": [
+    "@alistairg"
+  ]
+}
