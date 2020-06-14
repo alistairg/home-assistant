@@ -85,7 +85,7 @@ aiofreepybox==0.0.8
 aioguardian==0.2.3
 
 # homeassistant.components.harmony
-aioharmony==0.1.13
+aioharmony==0.2.4
 
 # homeassistant.components.homekit_controller
 aiohomekit[IP]==0.2.38
@@ -153,13 +153,13 @@ av==8.0.2
 avri-api==0.1.7
 
 # homeassistant.components.axis
-axis==29
+axis==30
 
 # homeassistant.components.homekit
 base36==0.1.1
 
 # homeassistant.components.zha
-bellows==0.16.2
+bellows==0.17.0
 
 # homeassistant.components.blebox
 blebox_uniapi==1.3.2
@@ -197,7 +197,7 @@ colorlog==4.1.0
 construct==2.9.45
 
 # homeassistant.components.coronavirus
-coronavirus==1.1.0
+coronavirus==1.1.1
 
 # homeassistant.scripts.credstash
 # credstash==1.15.0
@@ -309,7 +309,7 @@ ha-ffmpeg==2.0
 hangups==0.4.9
 
 # homeassistant.components.cloud
-hass-nabucasa==0.34.5
+hass-nabucasa==0.34.6
 
 # homeassistant.components.mqtt
 hbmqtt==0.9.5
@@ -327,7 +327,7 @@ hole==0.5.1
 holidays==0.10.2
 
 # homeassistant.components.frontend
-home-assistant-frontend==20200603.2
+home-assistant-frontend==20200613.0
 
 # homeassistant.components.zwave
 homeassistant-pyozw==0.1.10
@@ -336,7 +336,7 @@ homeassistant-pyozw==0.1.10
 homeconnect==0.5
 
 # homeassistant.components.homematicip_cloud
-homematicip==0.10.17
+homematicip==0.10.18
 
 # homeassistant.components.google
 # homeassistant.components.remember_the_milk
@@ -347,6 +347,9 @@ huawei-lte-api==1.4.12
 
 # homeassistant.components.iaqualink
 iaqualink==0.3.4
+
+# homeassistant.components.influxdb
+influxdb-client==1.6.0
 
 # homeassistant.components.influxdb
 influxdb==5.2.3
@@ -554,7 +557,7 @@ pycoolmasternet==0.0.4
 pycountry==19.8.18
 
 # homeassistant.components.daikin
-pydaikin==2.1.1
+pydaikin==2.1.2
 
 # homeassistant.components.deconz
 pydeconz==71
@@ -648,7 +651,7 @@ pymodbus==2.3.0
 pymonoprice==0.3
 
 # homeassistant.components.myq
-pymyq==2.0.3
+pymyq==2.0.4
 
 # homeassistant.components.nut
 pynut2==2.1.2
@@ -657,7 +660,7 @@ pynut2==2.1.2
 pynws==0.10.4
 
 # homeassistant.components.nx584
-pynx584==0.4
+pynx584==0.5
 
 # homeassistant.components.openuv
 pyopenuv==1.0.9
@@ -720,7 +723,7 @@ python-izone==1.1.2
 python-juicenet==1.0.1
 
 # homeassistant.components.xiaomi_miio
-python-miio==0.5.0.1
+python-miio==0.5.1
 
 # homeassistant.components.nest
 python-nest==4.1.0
@@ -756,7 +759,7 @@ pytraccar==0.9.0
 pytradfri[async]==6.4.0
 
 # homeassistant.components.vera
-pyvera==0.3.7
+pyvera==0.3.9
 
 # homeassistant.components.vesync
 pyvesync==1.1.0
@@ -830,6 +833,9 @@ sonarr==0.2.2
 # homeassistant.components.marytts
 speak2mary==1.4.0
 
+# homeassistant.components.speedtestdotnet
+speedtest-cli==2.1.2
+
 # homeassistant.components.spotify
 spotipy==2.12.0
 
@@ -856,7 +862,7 @@ sunwatcher==0.2.1
 tellduslive==0.10.11
 
 # homeassistant.components.powerwall
-tesla-powerwall==0.2.10
+tesla-powerwall==0.2.11
 
 # homeassistant.components.tesla
 teslajsonpy==0.8.1
@@ -913,7 +919,7 @@ wiffi==1.0.0
 withings-api==2.1.3
 
 # homeassistant.components.wled
-wled==0.4.2
+wled==0.4.3
 
 # homeassistant.components.bluesound
 # homeassistant.components.rest
@@ -945,4 +951,4 @@ zigpy-xbee==0.12.1
 zigpy-zigate==0.6.1
 
 # homeassistant.components.zha
-zigpy==0.20.4
+zigpy==0.21.0
